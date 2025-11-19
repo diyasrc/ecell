@@ -1,0 +1,386 @@
+<!--
+4x4_jigsaw_puzzle.html
+Interactive 4x4 jigsaw-style puzzle (drag & drop).
+
+How to use:
+1. Open this file in your browser (double-click or serve with a static server).
+2. Replace `assets/puzzle.jpg` with your own image (keep same aspect ratio ideally).
+   - Alternatively, use the Python snippet at the bottom to slice your image into 16 tiles and set `useSprite = false`.
+3. Edit CONFIG below to change grid size (currently 4x4), tile gap, and whether to use a sprite.
+4. Modify styles in the CSS section to change the look.
+
+Features implemented:
+- 4x4 grid of draggable tiles
+- Shuffle function that randomizes positions (but ensures solvable by simple random for drag-swap puzzles)
+- Snap-swap behavior: when you drop a tile onto another tile, they swap places
+- Win detection: when all tiles are back to original indices, shows a celebration
+- Keyboard accessibility: arrow keys move the "selected" tile (basic)
+- Comments throughout to help you modify
+
+Because you said you're comfortable with Python, there is a short Python snippet at the end (commented) using Pillow to slice an image into 16 tiles if you want individual images instead of one sprite.
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>4x4 Jigsaw Puzzle — Invest in Me</title>
+  <style>
+    :root{
+      --cols: 4; /* change to NxN by also updating CONFIG in JS */
+      --tile-gap: 2px;
+      --tile-size: calc((min(720px, 90vmin) - (var(--cols) - 1) * var(--tile-gap)) / var(--cols));
+      --accent: #ff7a59;
+      --bg: #0f1724;
+      --card: #0b1220;
+      --text: #e6eef8;
+    }
+
+    html,body{height:100%;margin:0;font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;background:linear-gradient(180deg,var(--bg),#071021);color:var(--text);display:flex;align-items:center;justify-content:center}
+
+    .container{
+      width: min(880px, 94vw);
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border-radius:16px;padding:20px;box-shadow: 0 8px 30px rgba(2,6,23,0.6);
+    }
+
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+    h1{font-size:1.1rem;margin:0}
+    p.lead{margin:0.2rem 0 0;color:rgba(230,238,248,0.75);font-size:0.9rem}
+
+    .board-wrap{display:flex;gap:18px;align-items:flex-start}
+
+    /* Puzzle board */
+    .board{
+      width: calc(var(--cols) * var(--tile-size) + (var(--cols) - 1) * var(--tile-gap));
+      height: calc(var(--cols) * var(--tile-size) + (var(--cols) - 1) * var(--tile-gap));
+      display:grid;
+      grid-template-columns: repeat(var(--cols), 1fr);
+      gap: var(--tile-gap);
+      background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.00));
+      padding:8px;border-radius:12px;
+    }
+
+    .tile{
+      position:relative;user-select:none;cursor:grab;border-radius:8px;overflow:hidden;box-shadow: 0 6px 18px rgba(2,6,23,0.5);
+      display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:rgba(255,255,255,0.85);
+      background-color: #0b1624;transition:transform .12s ease, box-shadow .12s ease;
+    }
+    .tile.dragging{opacity:0.85;transform:scale(1.02);cursor:grabbing;z-index:100}
+
+    /* If using single sprite image: use background positioning on a pseudo element */
+    .tile::before{content:'';position:absolute;inset:0;background-size: calc(var(--cols) * 100%) calc(var(--cols) * 100%);background-repeat:no-repeat;}
+
+    /* Controls */
+    .controls{display:flex;flex-direction:column;gap:10px;min-width:220px}
+    .btn{background:var(--accent);border:none;color:white;padding:10px 12px;border-radius:10px;font-weight:600;cursor:pointer}
+    .btn.ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);}
+
+    .meta{font-size:0.85rem;color:rgba(230,238,248,0.7)}
+
+    .status{margin-top:10px;padding:10px;border-radius:8px;background:rgba(255,255,255,0.02);font-size:0.9rem}
+
+    /* small celebration effect */
+    .win{margin-top:10px;padding:12px;border-radius:10px;background:linear-gradient(90deg,#0f1724,var(--accent));color:white;text-align:center;font-weight:700}
+
+    @media (max-width:740px){
+      .board-wrap{flex-direction:column;align-items:center}
+      .controls{width:100%;flex-direction:row;justify-content:space-between}
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>4×4 Puzzle — "Invest in Me" submission</h1>
+        <p class="lead">Drag to swap tiles. Shuffle to mix. The last piece completes the picture — just like I complete a team.</p>
+      </div>
+          </header>
+
+    <div class="board-wrap">
+      <div id="board" class="board" aria-label="puzzle board"></div>
+
+      <aside class="controls">
+        <div style="display:flex;gap:8px;">
+          <button id="shuffleBtn" class="btn">Shuffle</button>
+          <button id="resetBtn" class="btn ghost">Reset</button>
+        </div>
+        <div class="status" id="status">Moves: <span id="moves">0</span></div>
+        <div id="winMsg" class="win" style="display:none">You solved it — the perfect fit ✅</div>
+        <div style="font-size:0.85rem;color:rgba(230,238,248,0.7);margin-top:8px">Pro tip: Replace <code>assets/puzzle.jpg</code> with your image. See top comments for Python slicer.</div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    /*********************
+     * CONFIG
+     *********************/
+    const CONFIG = {
+      cols: 4, // change this to 3,4,5, etc. (if !=4, edit CSS root var --cols too or add dynamic assignment)
+      useSprite: true, // if true, we use a single image (`spriteUrl`) and background-position. If false, set tileUrls array or use sliced images.
+      spriteUrl: 'img.jpg', // path to your full image. Recommended: square or close to square for clean tiles.
+      tileUrls: null, // optional: array of 16 image urls (if useSprite=false). You can generate with Python snippet below.
+      showNumbers: false // if true, shows tile index numbers for debugging
+    };
+
+    // keep CSS variable in sync with JS for flexible grids
+    document.documentElement.style.setProperty('--cols', CONFIG.cols);
+
+    /*********************
+     * Boilerplate state
+     *********************/
+    const boardEl = document.getElementById('board');
+    const movesEl = document.getElementById('moves');
+    const winMsg = document.getElementById('winMsg');
+
+    let tiles = []; // array of tile objects {id:0..N-1, correctIndex, currentIndex}
+    let draggingEl = null;
+    let moves = 0;
+
+    /*********************
+     * Initialize grid
+     *********************/
+    function initTiles(){
+      const total = CONFIG.cols * CONFIG.cols;
+      tiles = Array.from({length:total}, (_, i) => ({id: i, correctIndex: i, currentIndex: i}));
+      renderBoard();
+      moves = 0; updateMoves();
+      winMsg.style.display = 'none';
+    }
+
+    /*********************
+     * Render board
+     *********************/
+    function renderBoard(){
+      boardEl.innerHTML = '';
+      tiles.forEach((t, pos) => {
+        const tile = document.createElement('div');
+        tile.className = 'tile';
+        tile.draggable = true;
+        tile.dataset.tileId = t.id;
+        tile.dataset.pos = pos;
+        // accessible label
+        tile.setAttribute('aria-grabbed', 'false');
+        if(CONFIG.showNumbers){
+          tile.textContent = t.correctIndex + 1;
+        }
+
+        // background for sprite: calculate background-position based on correctIndex
+        if(CONFIG.useSprite){
+          const r = Math.floor(t.correctIndex / CONFIG.cols);
+          const c = t.correctIndex % CONFIG.cols;
+          const xpos = (c / (CONFIG.cols - 1)) * 100;
+          const ypos = (r / (CONFIG.cols - 1)) * 100;
+          // set background-image on pseudo element via inline style on element's ::before is not possible,
+          // so we use background on the element itself but keep a dark overlay color via ::before in CSS (already set)
+          tile.style.backgroundImage = `url('${CONFIG.spriteUrl}')`;
+          tile.style.backgroundSize = `${CONFIG.cols * 100}% ${CONFIG.cols * 100}%`;
+          tile.style.backgroundPosition = `${xpos}% ${ypos}%`;
+        } else if (CONFIG.tileUrls && CONFIG.tileUrls[t.correctIndex]){
+          tile.style.backgroundImage = `url('${CONFIG.tileUrls[t.correctIndex]}')`;
+          tile.style.backgroundSize = 'cover';
+          tile.style.backgroundPosition = 'center';
+        } else {
+          // fallback color
+          tile.style.background = 'linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.2))';
+        }
+
+        bindDragEvents(tile);
+        boardEl.appendChild(tile);
+      });
+    }
+
+    /*********************
+     * Drag and Drop logic
+     *********************/
+    function bindDragEvents(tile){
+      tile.addEventListener('dragstart', (e) => {
+        draggingEl = tile;
+        tile.classList.add('dragging');
+        tile.setAttribute('aria-grabbed', 'true');
+        e.dataTransfer.setData('text/plain', tile.dataset.tileId);
+        // optional: custom drag image
+      });
+
+      tile.addEventListener('dragend', () => {
+        if(draggingEl){
+          draggingEl.classList.remove('dragging');
+          draggingEl.setAttribute('aria-grabbed', 'false');
+          draggingEl = null;
+        }
+      });
+
+      tile.addEventListener('dragover', (e) => {
+        e.preventDefault();
+      });
+
+      tile.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const fromId = parseInt(e.dataTransfer.getData('text/plain'));
+        const toId = parseInt(tile.dataset.tileId);
+        swapTilesById(fromId, toId);
+      });
+
+      // allow click-to-select and keyboard moves
+      tile.addEventListener('click', () => {
+        // clicking selects tile for keyboard control
+        document.querySelectorAll('.tile').forEach(t => t.classList.remove('selected'));
+        tile.classList.add('selected');
+        tile.focus();
+      });
+
+      tile.tabIndex = 0; // make focusable
+    }
+
+    /*********************
+     * Swap helper
+     *********************/
+    function swapTilesById(idA, idB){
+      if(idA === idB) return;
+      const idxA = tiles.findIndex(t=>t.id===idA);
+      const idxB = tiles.findIndex(t=>t.id===idB);
+      if(idxA<0||idxB<0) return;
+      // swap currentIndex values
+      const temp = tiles[idxA].currentIndex;
+      tiles[idxA].currentIndex = tiles[idxB].currentIndex;
+      tiles[idxB].currentIndex = temp;
+      // swap positions of array elements so render order reflects current positions
+      [tiles[idxA], tiles[idxB]] = [tiles[idxB], tiles[idxA]];
+      renderBoard();
+      moves += 1; updateMoves();
+      checkWin();
+    }
+
+    /*********************
+     * Shuffle (random swap)
+     *********************/
+    function shuffleTiles(times=200){
+      const total = tiles.length;
+      for(let i=0;i<times;i++){
+        const a = Math.floor(Math.random()*total);
+        let b = Math.floor(Math.random()*total);
+        if(a===b) b = (b+1)%total;
+        // swap array positions
+        [tiles[a], tiles[b]] = [tiles[b], tiles[a]];
+      }
+      // after shuffle normalize currentIndex to match new positions
+      tiles.forEach((t, pos) => t.currentIndex = pos);
+      renderBoard();
+      moves = 0; updateMoves();
+      winMsg.style.display = 'none';
+    }
+
+    /*********************
+     * Win detection
+     *********************/
+    function checkWin(){
+      const solved = tiles.every((t, pos) => t.correctIndex === pos);
+      if(solved){
+        winMsg.style.display = 'block';
+        confetti();
+      }
+    }
+
+    /*********************
+     * Utilities
+     *********************/
+    function updateMoves(){ movesEl.textContent = moves; }
+
+    document.getElementById('shuffleBtn').addEventListener('click', ()=>shuffleTiles(300));
+    document.getElementById('resetBtn').addEventListener('click', ()=>initTiles());
+
+    /*********************
+     * Simple confetti (tiny)
+     *********************/
+    function confetti(){
+      // tiny visual: create a burst of small elements
+      const frag = document.createDocumentFragment();
+      for(let i=0;i<20;i++){
+        const c = document.createElement('div');
+        c.style.position='fixed';c.style.left=(50+Math.random()*20-10)+'%';c.style.top='40%';c.style.width='8px';c.style.height='8px';
+        c.style.borderRadius='50%';c.style.background=['#ff7a59','#ffd166','#4ade80','#60a5fa'][Math.floor(Math.random()*4)];
+        c.style.transform=`translateY(${0}px)`;c.style.zIndex=9999;document.body.appendChild(c);
+        (function(el){
+          setTimeout(()=>{
+            el.style.transition='transform 900ms ease, opacity 900ms ease';
+            el.style.transform='translateY(300px) translateX('+(Math.random()*200-100)+'px) rotate('+Math.random()*360+'deg)';
+            el.style.opacity='0';
+          },10);
+          setTimeout(()=>el.remove(),1200);
+        })(c);
+      }
+    }
+
+    /*********************
+     * Keyboard: move selected tile by swapping with neighbor
+     *********************/
+    document.addEventListener('keydown', (e)=>{
+      const sel = document.querySelector('.tile.selected');
+      if(!sel) return;
+      const pos = parseInt(sel.dataset.pos);
+      const cols = CONFIG.cols; const total = tiles.length;
+      let targetPos = null;
+      if(e.key === 'ArrowLeft') targetPos = (pos % cols === 0) ? null : pos - 1;
+      if(e.key === 'ArrowRight') targetPos = (pos % cols === cols-1) ? null : pos + 1;
+      if(e.key === 'ArrowUp') targetPos = (pos - cols < 0) ? null : pos - cols;
+      if(e.key === 'ArrowDown') targetPos = (pos + cols >= total) ? null : pos + cols;
+      if(targetPos !== null){
+        const targetTile = document.querySelector(`.tile[data-pos='${targetPos}']`);
+        if(targetTile){
+          swapTilesById(parseInt(sel.dataset.tileId), parseInt(targetTile.dataset.tileId));
+          // move selection to new place
+          setTimeout(()=>{
+            const newSel = document.querySelector(`.tile[data-pos='${targetPos}']`);
+            document.querySelectorAll('.tile').forEach(t => t.classList.remove('selected'));
+            if(newSel) newSel.classList.add('selected');
+          }, 20);
+        }
+      }
+    });
+
+    // initialize on load
+    initTiles();
+
+    /*********************
+     * Optional: If you prefer separate tile images (tileUrls), you can set CONFIG.useSprite=false and provide CONFIG.tileUrls as an array of length cols*cols in order.
+     *
+     * Python helper (Pillow) to slice an input image into NxN tiles — save these to assets/tile-0.jpg ... tile-15.jpg and set useSprite=false
+     */
+  </script>
+
+  <!--
+  Python slicer (save as slice_tiles.py) - requires Pillow
+
+  from PIL import Image
+  import math
+
+  INPUT = 'puzzle.jpg'  # put your full image here inside the same folder or assets/
+  OUT_DIR = 'assets'
+  N = 4
+
+  img = Image.open(INPUT)
+  w, h = img.size
+  # crop to square (optional) - center crop
+  side = min(w, h)
+  left = (w - side) // 2
+  top = (h - side) // 2
+  img = img.crop((left, top, left+side, top+side))
+
+  tile_w = side // N
+  tile_h = side // N
+
+  for r in range(N):
+      for c in range(N):
+          box = (c*tile_w, r*tile_h, (c+1)*tile_w, (r+1)*tile_h)
+          tile = img.crop(box)
+          idx = r*N + c
+          tile.save(f"{OUT_DIR}/tile-{idx}.jpg", quality=90)
+
+  # After running: set CONFIG.useSprite = false and
+  # CONFIG.tileUrls = Array.from({length:N*N}, (_,i)=>`assets/tile-${i}.jpg`)
+  -->
+</body>
+</html>
